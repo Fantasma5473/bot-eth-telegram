@@ -13,7 +13,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Bot V26 Rodando!")
+        self.wfile.write(b"Bot V26 Ultra Rodando!")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -70,10 +70,10 @@ def calculate_rsi(df, window=7):
     return df
 
 # ==========================================
-# 3. MOTOR DE SINAIS SIMPLIFICADO
+# 3. MOTOR DE SINAIS E RESULTADO AUTOMÁTICO
 # ==========================================
 def run_trading_engine():
-    print("--> Engine V26 M1 Ligado")
+    print("--> Engine V26 M1 Ultra Rodando")
     last_signal_candle = None
     active_trade = None
 
@@ -83,39 +83,41 @@ def run_trading_engine():
             if df is not None and len(df) >= 15:
                 df = calculate_rsi(df)
                 
-                # Vela já fechada mais recente
                 closed_candle = df.iloc[-2]
                 candle_time = closed_candle['timestamp']
                 price = closed_candle['close']
                 rsi = closed_candle['RSI']
 
-                # 1. VERIFICA RESULTADO DO SINAL ANTERIOR
-                if active_trade is not None:
+                # 1. VALIDA O RESULTADO DA OPERAÇÃO ANTERIOR
+                if active_trade is not None and active_trade.get("target_candle") == candle_time:
                     entry = active_trade['entry']
                     direction = active_trade['direction']
                     
                     if direction == "CALL":
                         if price > entry:
-                            send_telegram_message(f"🟢 *[WIN - COMPRA]*\nEntrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                            send_telegram_message(f"🟢 *[WIN - COMPRA]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${price:.2f}")
                         else:
-                            send_telegram_message(f"🔴 *[LOSS - COMPRA]*\nEntrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                            send_telegram_message(f"🔴 *[LOSS - COMPRA]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${price:.2f}")
                     elif direction == "PUT":
                         if price < entry:
-                            send_telegram_message(f"🟢 *[WIN - VENDA]*\nEntrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                            send_telegram_message(f"🟢 *[WIN - VENDA]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${price:.2f}")
                         else:
-                            send_telegram_message(f"🔴 *[LOSS - VENDA]*\nEntrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                            send_telegram_message(f"🔴 *[LOSS - VENDA]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${price:.2f}")
                     
                     active_trade = None
 
-                # 2. DISPARA NOVO SINAL (RSI <= 32 COMPRA / RSI >= 68 VENDA)
-                if last_signal_candle != candle_time:
-                    if rsi <= 32:
+                # 2. DISPARA NOVO SINAL (RSI <= 35 COMPRA / RSI >= 65 VENDA)
+                if last_signal_candle != candle_time and active_trade is None:
+                    if rsi <= 35:
                         send_telegram_message(f"⚡ *[M1] SINAL: CALL (COMPRA)*\n💰 *Preço:* ${price:.2f}\n📊 *RSI(7):* {rsi:.1f}\n⏳ *Expiração:* 1 Minuto")
-                        active_trade = {"direction": "CALL", "entry": price}
+                        # Alvo de validação = próximo candle fechado
+                        next_candle_time = candle_time + 60000
+                        active_trade = {"direction": "CALL", "entry": price, "target_candle": next_candle_time}
                         last_signal_candle = candle_time
-                    elif rsi >= 68:
+                    elif rsi >= 65:
                         send_telegram_message(f"⚡ *[M1] SINAL: PUT (VENDA)*\n💰 *Preço:* ${price:.2f}\n📊 *RSI(7):* {rsi:.1f}\n⏳ *Expiração:* 1 Minuto")
-                        active_trade = {"direction": "PUT", "entry": price}
+                        next_candle_time = candle_time + 60000
+                        active_trade = {"direction": "PUT", "entry": price, "target_candle": next_candle_time}
                         last_signal_candle = candle_time
 
         except Exception as e:
@@ -124,5 +126,5 @@ def run_trading_engine():
         time.sleep(5)
 
 if __name__ == "__main__":
-    send_telegram_message("🚀 *Bot V26 M1 Ultra Ativo!*\n⚡ Gatilho RSI(7): ≤ 32 (CALL) / ≥ 68 (PUT)\n🎯 Validação de WIN/LOSS a cada 1 min.")
+    send_telegram_message("🚀 *Bot V26 M1 Ultra Atualizado!*\n⚡ Filtro RSI(7): ≤ 35 (CALL) / ≥ 65 (PUT)\n🎯 Validação de WIN/LOSS na vela seguinte.")
     run_trading_engine()
