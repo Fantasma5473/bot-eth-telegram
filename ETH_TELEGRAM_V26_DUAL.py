@@ -2,7 +2,6 @@ import os
 import time
 import requests
 import pandas as pd
-import numpy as np
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -14,7 +13,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Bot V26 Exaustao M1 (Dual Telegram) Rodando!")
+        self.wfile.write(b"Bot V26 Rodando!")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -46,7 +45,7 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Erro no Telegram: {e}")
 
-def get_binance_klines(symbol="ETHUSDT", interval="1m", limit=100):
+def get_binance_klines(symbol="ETHUSDT", interval="1m", limit=50):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         response = requests.get(url, timeout=10)
@@ -56,157 +55,74 @@ def get_binance_klines(symbol="ETHUSDT", interval="1m", limit=100):
             'close_time', 'quote_asset_volume', 'number_of_trades',
             'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
         ])
-        df['open'] = df['open'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
         df['close'] = df['close'].astype(float)
-        df['volume'] = df['volume'].astype(float)
         return df
     except Exception as e:
         print(f"Erro Binance: {e}")
         return None
 
-def calculate_indicators(df):
-    # RSI (7)
+def calculate_rsi(df, window=7):
     delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=7).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=7).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
     rs = gain / loss
-    df['RSI7'] = 100 - (100 / (1 + rs))
-
-    # BBZ (Bollinger Band Z-Score 20)
-    sma20 = df['close'].rolling(window=20).mean()
-    std20 = df['close'].rolling(window=20).std()
-    df['BBZ'] = (df['close'] - sma20) / std20
-
-    # Volume Relativo
-    vol_sma20 = df['volume'].rolling(window=20).mean()
-    df['VOL_REL'] = df['volume'] / vol_sma20
-
-    # Contagem de Velas Seguidas da mesma cor
-    df['is_green'] = df['close'] > df['open']
-    df['is_red'] = df['close'] < df['open']
-    
-    velas_seguidas = []
-    count = 0
-    last_dir = None
-    for idx, row in df.iterrows():
-        if row['is_green']:
-            curr_dir = 'green'
-        elif row['is_red']:
-            curr_dir = 'red'
-        else:
-            curr_dir = None
-
-        if curr_dir == last_dir and curr_dir is not None:
-            count += 1
-        else:
-            count = 1 if curr_dir is not None else 0
-            last_dir = curr_dir
-        velas_seguidas.append(count)
-    df['VELAS_SEGUIDAS'] = velas_seguidas
-
+    df['RSI'] = 100 - (100 / (1 + rs))
     return df
 
 # ==========================================
-# 3. MOTOR DE NEGOCIAÇÃO M1 (DUAL)
+# 3. MOTOR DE SINAIS SIMPLIFICADO
 # ==========================================
 def run_trading_engine():
-    print("--> Engine V26 M1 Dual Iniciado")
-    last_signal_time_agressivo = None
-    last_signal_time_conservador = None
-    
-    active_trade_agressivo = None
-    active_trade_conservador = None
+    print("--> Engine V26 M1 Ligado")
+    last_signal_candle = None
+    active_trade = None
 
     while True:
         try:
-            df = get_binance_klines(interval="1m")
-            if df is not None and len(df) >= 30:
-                df = calculate_indicators(df)
-                last = df.iloc[-2]  # Candle recém-fechado
-                current_time = last['timestamp']
-                current_price = last['close']
+            df = get_binance_klines()
+            if df is not None and len(df) >= 15:
+                df = calculate_rsi(df)
+                
+                # Vela já fechada mais recente
+                closed_candle = df.iloc[-2]
+                candle_time = closed_candle['timestamp']
+                price = closed_candle['close']
+                rsi = closed_candle['RSI']
 
-                # --- VALIDAR RESULTADO AGRESSIVO (1 MINUTO) ---
-                if active_trade_agressivo is not None:
-                    entry = active_trade_agressivo['entry_price']
-                    direction = active_trade_agressivo['direction']
-                    if (direction == "CALL" and current_price > entry) or (direction == "PUT" and current_price < entry):
-                        send_telegram_message(f"🟢 *[WIN - AGRESSIVO M1]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${current_price:.2f}")
-                    else:
-                        send_telegram_message(f"🔴 *[LOSS - AGRESSIVO M1]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${current_price:.2f}")
-                    active_trade_agressivo = None
+                # 1. VERIFICA RESULTADO DO SINAL ANTERIOR
+                if active_trade is not None:
+                    entry = active_trade['entry']
+                    direction = active_trade['direction']
+                    
+                    if direction == "CALL":
+                        if price > entry:
+                            send_telegram_message(f"🟢 *[WIN - COMPRA]*\nEntrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                        else:
+                            send_telegram_message(f"🔴 *[LOSS - COMPRA]*\nEntrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                    elif direction == "PUT":
+                        if price < entry:
+                            send_telegram_message(f"🟢 *[WIN - VENDA]*\nEntrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                        else:
+                            send_telegram_message(f"🔴 *[LOSS - VENDA]*\nEntrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                    
+                    active_trade = None
 
-                # --- VALIDAR RESULTADO CONSERVADOR (1 MINUTO) ---
-                if active_trade_conservador is not None:
-                    entry = active_trade_conservador['entry_price']
-                    direction = active_trade_conservador['direction']
-                    if (direction == "CALL" and current_price > entry) or (direction == "PUT" and current_price < entry):
-                        send_telegram_message(f"🟢 *[WIN - CONSERVADOR M1]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${current_price:.2f}")
-                    else:
-                        send_telegram_message(f"🔴 *[LOSS - CONSERVADOR M1]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${current_price:.2f}")
-                    active_trade_conservador = None
-
-                # --- GERAR SINAIS MODO AGRESSIVO (M1) ---
-                if last_signal_time_agressivo != current_time:
-                    if last['RSI7'] <= 30 or last['BBZ'] <= -1.8:
-                        active_trade_agressivo = {"direction": "CALL", "entry_price": current_price}
-                        msg = (
-                            f"⚡ *[AGRESSIVO - M1] SINAL: CALL (COMPRA)*\n"
-                            f"💰 *Entrada:* ${current_price:.2f}\n"
-                            f"📊 *RSI(7):* {last['RSI7']:.1f} | *BBZ:* {last['BBZ']:.2f}\n"
-                            f"📈 *Vol Rel:* {last['VOL_REL']:.2f}x | *Velas Seguidas:* {last['VELAS_SEGUIDAS']}\n"
-                            f"⏳ *Expiração:* Final da Vela (1m)"
-                        )
-                        send_telegram_message(msg)
-                        last_signal_time_agressivo = current_time
-
-                    elif last['RSI7'] >= 70 or last['BBZ'] >= 1.8:
-                        active_trade_agressivo = {"direction": "PUT", "entry_price": current_price}
-                        msg = (
-                            f"⚡ *[AGRESSIVO - M1] SINAL: PUT (VENDA)*\n"
-                            f"💰 *Entrada:* ${current_price:.2f}\n"
-                            f"📊 *RSI(7):* {last['RSI7']:.1f} | *BBZ:* {last['BBZ']:.2f}\n"
-                            f"📈 *Vol Rel:* {last['VOL_REL']:.2f}x | *Velas Seguidas:* {last['VELAS_SEGUIDAS']}\n"
-                            f"⏳ *Expiração:* Final da Vela (1m)"
-                        )
-                        send_telegram_message(msg)
-                        last_signal_time_agressivo = current_time
-
-                # --- GERAR SINAIS MODO CONSERVADOR (M1) ---
-                if last_signal_time_conservador != current_time:
-                    if last['RSI7'] <= 22 and last['BBZ'] <= -2.1:
-                        active_trade_conservador = {"direction": "CALL", "entry_price": current_price}
-                        msg = (
-                            f"🛡️ *[CONSERVADOR - M1] SINAL: CALL (COMPRA)*\n"
-                            f"💰 *Entrada:* ${current_price:.2f}\n"
-                            f"📊 *RSI(7):* {last['RSI7']:.1f} | *BBZ:* {last['BBZ']:.2f}\n"
-                            f"📈 *Vol Rel:* {last['VOL_REL']:.2f}x | *Velas Seguidas:* {last['VELAS_SEGUIDAS']}\n"
-                            f"⏳ *Expiração:* Final da Vela (1m)"
-                        )
-                        send_telegram_message(msg)
-                        last_signal_time_conservador = current_time
-
-                    elif last['RSI7'] >= 78 and last['BBZ'] >= 2.1:
-                        active_trade_conservador = {"direction": "PUT", "entry_price": current_price}
-                        msg = (
-                            f"🛡️ *[CONSERVADOR - M1] SINAL: PUT (VENDA)*\n"
-                            f"💰 *Entrada:* ${current_price:.2f}\n"
-                            f"📊 *RSI(7):* {last['RSI7']:.1f} | *BBZ:* {last['BBZ']:.2f}\n"
-                            f"📈 *Vol Rel:* {last['VOL_REL']:.2f}x | *Velas Seguidas:* {last['VELAS_SEGUIDAS']}\n"
-                            f"⏳ *Expiração:* Final da Vela (1m)"
-                        )
-                        send_telegram_message(msg)
-                        last_signal_time_conservador = current_time
+                # 2. DISPARA NOVO SINAL (RSI <= 32 COMPRA / RSI >= 68 VENDA)
+                if last_signal_candle != candle_time:
+                    if rsi <= 32:
+                        send_telegram_message(f"⚡ *[M1] SINAL: CALL (COMPRA)*\n💰 *Preço:* ${price:.2f}\n📊 *RSI(7):* {rsi:.1f}\n⏳ *Expiração:* 1 Minuto")
+                        active_trade = {"direction": "CALL", "entry": price}
+                        last_signal_candle = candle_time
+                    elif rsi >= 68:
+                        send_telegram_message(f"⚡ *[M1] SINAL: PUT (VENDA)*\n💰 *Preço:* ${price:.2f}\n📊 *RSI(7):* {rsi:.1f}\n⏳ *Expiração:* 1 Minuto")
+                        active_trade = {"direction": "PUT", "entry": price}
+                        last_signal_candle = candle_time
 
         except Exception as e:
-            print(f"Erro Engine M1: {e}")
+            print(f"Erro no Loop: {e}")
+
         time.sleep(5)
 
-# ==========================================
-# 4. EXECUÇÃO
-# ==========================================
 if __name__ == "__main__":
-    send_telegram_message("🚀 *Bot V26 Exaustão M1 DUAL Atualizado com Sucesso!*\n⚡ Agressivo: RSI(7) ≤ 30 / ≥ 70 (~63 sinais/dia)\n🛡️ Conservador: RSI(7) ≤ 22 / ≥ 78 (~26 sinais/dia)\n⏳ Expiração: 1 Minuto para Opções Binárias.")
+    send_telegram_message("🚀 *Bot V26 M1 Ultra Ativo!*\n⚡ Gatilho RSI(7): ≤ 32 (CALL) / ≥ 68 (PUT)\n🎯 Validação de WIN/LOSS a cada 1 min.")
     run_trading_engine()
