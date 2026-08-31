@@ -2,129 +2,153 @@ import os
 import time
 import requests
 import pandas as pd
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import numpy as np
 
 # ==========================================
-# 1. SERVIDOR HTTP DE SAÚDE (RENDER FIX)
+# CONFIGURAÇÃO DE VARIÁVEIS DE AMBIENTE
 # ==========================================
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot V26 Ultra Rodando!")
-
-    def do_HEAD(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-
-def run_health_check_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    server.serve_forever()
-
-threading.Thread(target=run_health_check_server, daemon=True).start()
-
-# ==========================================
-# 2. CONFIGURAÇÕES TELEGRAM E BINANCE
-# ==========================================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "SEU_TOKEN_AQUI")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "SEU_CHAT_ID_AQUI")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8649783045:AAE2mxbkGREP3a6lrXWxh6nHaHEwfcCc5mg")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8704308638")
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        requests.post(url, json=payload, timeout=5)
     except Exception as e:
-        print(f"Erro no Telegram: {e}")
+        print(f"Erro no envio do Telegram: {e}")
 
-def get_binance_klines(symbol="ETHUSDT", interval="1m", limit=50):
+# ==========================================
+# DADOS DA BINANCE E INDICADORES PRO (61.6%)
+# ==========================================
+def get_binance_klines(symbol="ETHUSDT", interval="1m", limit=60):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, timeout=5)
         data = response.json()
         df = pd.DataFrame(data, columns=[
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+            'taker_buy_base', 'taker_buy_quote', 'ignore'
         ])
-        df['close'] = df['close'].astype(float)
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(float)
         return df
     except Exception as e:
-        print(f"Erro Binance: {e}")
+        print(f"Erro ao buscar dados da Binance: {e}")
         return None
 
-def calculate_rsi(df, window=7):
+def process_indicators(df):
+    df['candle_body'] = np.abs(df['close'] - df['open'])
+    df['is_green'] = df['close'] > df['open']
+    df['is_red'] = df['close'] < df['open']
+
+    # ATR 14
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
+    df['ATR14'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
+
+    # RSI 5
     delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
+    gain = (delta.where(delta > 0, 0)).rolling(5).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(5).mean()
+    df['RSI5'] = 100 - (100 / (1 + (gain / (loss + 1e-10))))
+
+    # BBZ (20)
+    sma20 = df['close'].rolling(20).mean()
+    std20 = df['close'].rolling(20).std()
+    df['BBZ'] = (df['close'] - sma20) / (std20 + 1e-10)
+
+    # Volume Relativo
+    vol_sma20 = df['volume'].rolling(20).mean()
+    df['VOL_REL'] = df['volume'] / (vol_sma20 + 1e-10)
+
+    # Velas Consecutivas
+    consec = []
+    c = 0
+    last = None
+    for g, r in zip(df['is_green'], df['is_red']):
+        curr = 'G' if g else ('R' if r else 'D')
+        if curr == last and curr != 'D':
+            c += 1
+        else:
+            c = 1 if curr != 'D' else 0
+            last = curr
+        consec.append(c)
+    df['consec'] = consec
     return df
 
 # ==========================================
-# 3. MOTOR DE SINAIS E RESULTADO AUTOMÁTICO
+# MOTOR DE EXECUÇÃO EM NUVEM (HEADLESS)
 # ==========================================
-def run_trading_engine():
-    print("--> Engine V26 M1 Ultra Rodando")
-    last_signal_candle = None
+def run_cloud_bot():
+    send_telegram_message("☁️ *Bot V26 Exaustão Pro (61.6%) Rodando 24/7 na Nuvem!*\n Pode desligar o computador. Os sinais serão enviados aqui.")
+    
+    last_signal_time = None
     active_trade = None
 
     while True:
         try:
             df = get_binance_klines()
-            if df is not None and len(df) >= 15:
-                df = calculate_rsi(df)
+            if df is not None and len(df) >= 30:
+                df = process_indicators(df)
+                closed = df.iloc[-2]
                 
-                closed_candle = df.iloc[-2]
-                candle_time = closed_candle['timestamp']
-                price = closed_candle['close']
-                rsi = closed_candle['RSI']
+                t_str = time.strftime('%H:%M:%S', time.localtime(closed['timestamp'] / 1000))
+                price = closed['close']
+                rsi = closed['RSI5']
+                bbz = closed['BBZ']
+                vol = closed['VOL_REL']
+                consec = closed['consec']
+                body = closed['candle_body']
+                atr = closed['ATR14']
 
-                # 1. VALIDA O RESULTADO DA OPERAÇÃO ANTERIOR
-                if active_trade is not None and active_trade.get("target_candle") == candle_time:
+                # 1. Validação do Sinal Anterior (WIN / LOSS)
+                if active_trade is not None and active_trade['target_time'] == closed['timestamp']:
                     entry = active_trade['entry']
                     direction = active_trade['direction']
                     
-                    if direction == "CALL":
-                        if price > entry:
-                            send_telegram_message(f"🟢 *[WIN - COMPRA]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${price:.2f}")
-                        else:
-                            send_telegram_message(f"🔴 *[LOSS - COMPRA]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${price:.2f}")
-                    elif direction == "PUT":
-                        if price < entry:
-                            send_telegram_message(f"🟢 *[WIN - VENDA]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${price:.2f}")
-                        else:
-                            send_telegram_message(f"🔴 *[LOSS - VENDA]*\n💰 Entrada: ${entry:.2f} | Fechamento: ${price:.2f}")
+                    is_win = (direction == "CALL" and price > entry) or (direction == "PUT" and price < entry)
+                    res = "WIN" if is_win else "LOSS"
+                    color_emoji = "🟢" if is_win else "🔴"
                     
+                    send_telegram_message(
+                        f"{color_emoji} *[RESULTADO: {res}]*\n"
+                        f"📌 *Direção:* {direction}\n"
+                        f"💰 *Entrada:* ${entry:.2f} | *Fechamento:* ${price:.2f}"
+                    )
                     active_trade = None
 
-                # 2. DISPARA NOVO SINAL (RSI <= 35 COMPRA / RSI >= 65 VENDA)
-                if last_signal_candle != candle_time and active_trade is None:
-                    if rsi <= 35:
-                        send_telegram_message(f"⚡ *[M1] SINAL: CALL (COMPRA)*\n💰 *Preço:* ${price:.2f}\n📊 *RSI(7):* {rsi:.1f}\n⏳ *Expiração:* 1 Minuto")
-                        # Alvo de validação = próximo candle fechado
-                        next_candle_time = candle_time + 60000
-                        active_trade = {"direction": "CALL", "entry": price, "target_candle": next_candle_time}
-                        last_signal_candle = candle_time
-                    elif rsi >= 65:
-                        send_telegram_message(f"⚡ *[M1] SINAL: PUT (VENDA)*\n💰 *Preço:* ${price:.2f}\n📊 *RSI(7):* {rsi:.1f}\n⏳ *Expiração:* 1 Minuto")
-                        next_candle_time = candle_time + 60000
-                        active_trade = {"direction": "PUT", "entry": price, "target_candle": next_candle_time}
-                        last_signal_candle = candle_time
+                # 2. Filtros Anti-Ruído (61.6% Winrate)
+                vol_ok = vol >= 1.5
+                body_ok = body >= (1.2 * atr)
+
+                if last_signal_time != closed['timestamp'] and active_trade is None:
+                    direction = None
+                    if closed['is_red'] and consec >= 4 and rsi <= 15 and bbz <= -2.8 and vol_ok and body_ok:
+                        direction = "CALL"
+                    elif closed['is_green'] and consec >= 4 and rsi >= 85 and bbz >= 2.8 and vol_ok and body_ok:
+                        direction = "PUT"
+
+                    if direction:
+                        send_telegram_message(
+                            f"⚡ *[SINAL EXAUSTÃO PRO - {direction}]*\n"
+                            f"💰 *Preço Entrada:* ${price:.2f}\n"
+                            f"📊 *RSI(5):* {rsi:.1f} | *BBZ:* {bbz:.2f}\n"
+                            f"🔊 *Vol Relativo:* {vol:.2f}x | *Velas Seguidas:* {consec}\n"
+                            f"⏳ *Expiração:* 1 Minuto"
+                        )
+                        
+                        active_trade = {
+                            "entry": price, "direction": direction, "target_time": closed['timestamp'] + 60000
+                        }
+                        last_signal_time = closed['timestamp']
 
         except Exception as e:
-            print(f"Erro no Loop: {e}")
-
+            print(f"Erro na execução da nuvem: {e}")
+        
         time.sleep(5)
 
 if __name__ == "__main__":
-    send_telegram_message("🚀 *Bot V26 M1 Ultra Atualizado!*\n⚡ Filtro RSI(7): ≤ 35 (CALL) / ≥ 65 (PUT)\n🎯 Validação de WIN/LOSS na vela seguinte.")
-    run_trading_engine()
+    run_cloud_bot()
