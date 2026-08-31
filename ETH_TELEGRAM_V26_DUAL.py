@@ -1,120 +1,141 @@
-﻿import time
+import os
+import time
 import requests
 import pandas as pd
-from datetime import datetime
+import numpy as np
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-TELEGRAM_TOKEN = "8649783045:AAE2mxbkGREP3a6lrXWxh6nHaHEwfcCc5mg"
-CHAT_ID = "8704308638"
+# ==========================================
+# 1. SERVIDOR HTTP DE SAÚDE (PARA O RENDER)
+# ==========================================
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot ETH Telegram rodando perfeitamente!")
+
+def run_health_check_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    print(f"--> Servidor HTTP de Health Check rodando na porta {port}")
+    server.serve_forever()
+
+# Inicia o servidor HTTP em uma thread secundária para não travar o bot
+threading.Thread(target=run_health_check_server, daemon=True).start()
+
+# ==========================================
+# 2. CONFIGURAÇÕES DO TELEGRAM E BINANCE
+# ==========================================
+# Insira seus dados abaixo se não estiver usando variáveis de ambiente
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "SEU_TOKEN_AQUI")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "SEU_CHAT_ID_AQUI")
 
 SYMBOL = "ETHUSDT"
-INTERVAL = "1m"
-LIMIT = 200
+INTERVAL = "15m"
+CHECK_INTERVAL = 60  # Verifica a cada 60 segundos
 
-def send_telegram_msg(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
+def send_telegram_message(message):
+    """Envia mensagem para o Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json()
     except Exception as e:
-        print(f"Erro ao enviar Telegram: {e}")
+        print(f"Erro ao enviar mensagem no Telegram: {e}")
+        return None
 
-def fetch_data():
+def get_binance_klines(symbol=SYMBOL, interval=INTERVAL, limit=100):
+    """Obtém dados históricos de velas (candles) da Binance"""
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
-        res = requests.get(url, timeout=5).json()
-        df = pd.DataFrame(res, columns=['time', 'open', 'high', 'low', 'close', 'volume', 'c_time', 'qav', 'num_trades', 'tbv', 'tqv', 'ignore'])
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        df = pd.DataFrame(data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'quote_asset_volume', 'number_of_trades',
+            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+        ])
+        df['close'] = df['close'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
         return df
-    except Exception:
+    except Exception as e:
+        print(f"Erro ao obter dados da Binance: {e}")
         return None
 
 def calculate_indicators(df):
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(7).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(7).mean()
-    df['rsi7'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
-
-    sma20 = df['close'].rolling(20).mean()
-    std20 = df['close'].rolling(20).std()
-    df['bbz'] = (df['close'] - sma20) / (std20 + 1e-9)
-
-    df['vol_rel'] = df['volume'] / df['volume'].rolling(20).mean()
-
-    df['is_green'] = df['close'] > df['open']
-    df['is_red'] = df['close'] < df['open']
+    """Calcula as médias móveis e RSI (Indicadores)"""
+    df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
+    df['EMA_21'] = df['close'].ewm(span=21, adjust=False).mean()
     
-    df['consec_green'] = (df['is_green'].astype(int).groupby((~df['is_green']).cumsum()).cumsum())
-    df['consec_red'] = (df['is_red'].astype(int).groupby((~df['is_red']).cumsum()).cumsum())
-
+    # Cálculo do RSI 14
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
     return df
 
+# ==========================================
+# 3. LOOP PRINCIPAL DO BOT
+# ==========================================
 def main():
-    print("🚀 Bot ETH V26 Dual Rodando no Telegram...")
-    last_candle_time = None
+    print("--> Bot ETH Telegram iniciado com sucesso!")
+    send_telegram_message("🚀 *Bot ETH iniciado e rodando 24/7 na nuvem!*")
+    
+    last_signal = None
 
     while True:
         try:
-            df = fetch_data()
-            if df is not None and len(df) > 50:
+            df = get_binance_klines()
+            if df is not None and not df.empty:
                 df = calculate_indicators(df)
                 
-                signal_candle = df.iloc[-2]
-                candle_time = signal_candle['time']
-
-                if candle_time != last_candle_time:
-                    last_candle_time = candle_time
-                    
-                    rsi7 = round(signal_candle['rsi7'], 1)
-                    bbz = round(signal_candle['bbz'], 2)
-                    vol = round(signal_candle['vol_rel'], 2)
-                    consec_red = int(signal_candle['consec_red'])
-                    consec_green = int(signal_candle['consec_green'])
-                    
-                    hora_entrada = datetime.fromtimestamp((candle_time + 60000) / 1000).strftime('%H:%M:00')
-
-                    cons_dir = None
-                    if rsi7 <= 18 and bbz <= -2.2 and vol >= 1.3 and consec_red >= 3:
-                        cons_dir = "CALL 🟢"
-                    elif rsi7 >= 82 and bbz >= 2.2 and vol >= 1.3 and consec_green >= 3:
-                        cons_dir = "PUT 🔴"
-
-                    if cons_dir:
-                        msg_cons = (
-                            f"🔵 <b>[V26 CONSERVADOR] SINAL ENCONTRADO</b> 🔵\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"📊 <b>Par:</b> ETH/USDT (1M)\n"
-                            f"🎯 <b>Direção:</b> {cons_dir}\n"
-                            f"⏰ <b>Entrada:</b> {hora_entrada}\n"
-                            f"📈 <b>RSI(7):</b> {rsi7} | <b>BBZ:</b> {bbz}\n"
-                            f"📊 <b>Vol:</b> {vol}x | <b>Velas:</b> {max(consec_red, consec_green)}\n"
-                            f"🛡️ <i>Perfil de Baixo Risco (Assertividade Alta)</i>"
+                last_row = df.iloc[-1]
+                prev_row = df.iloc[-2]
+                
+                price = last_row['close']
+                ema9 = last_row['EMA_9']
+                ema21 = last_row['EMA_21']
+                rsi = last_row['RSI']
+                
+                prev_ema9 = prev_row['EMA_9']
+                prev_ema21 = prev_row['EMA_21']
+                
+                # Condição de COMPRA (Cruzamento de Alta)
+                if prev_ema9 <= prev_ema21 and ema9 > ema21:
+                    if last_signal != "BUY":
+                        msg = (
+                            f"🟢 *SINAL DE COMPRA (LONG) - ETH/USDT*\n\n"
+                            f"💰 *Preço Atual:* ${price:.2f}\n"
+                            f"📊 *RSI (14):* {rsi:.1f}\n"
+                            f"📈 *EMA 9 cruzou acima da EMA 21*"
                         )
-                        send_telegram_msg(msg_cons)
-                    
-                    else:
-                        agg_dir = None
-                        if rsi7 <= 25 and bbz <= -2.0 and vol >= 1.0 and consec_red >= 2:
-                            agg_dir = "CALL 🟢"
-                        elif rsi7 >= 75 and bbz >= 2.0 and vol >= 1.0 and consec_green >= 2:
-                            agg_dir = "PUT 🔴"
+                        send_telegram_message(msg)
+                        last_signal = "BUY"
+                
+                # Condição de VENDA (Cruzamento de Baixa)
+                elif prev_ema9 >= prev_ema21 and ema9 < ema21:
+                    if last_signal != "SELL":
+                        msg = (
+                            f"🔴 *SINAL DE VENDA (SHORT) - ETH/USDT*\n\n"
+                            f"💰 *Preço Atual:* ${price:.2f}\n"
+                            f"📊 *RSI (14):* {rsi:.1f}\n"
+                            f"📉 *EMA 9 cruzou abaixo da EMA 21*"
+                        )
+                        send_telegram_message(msg)
+                        last_signal = "SELL"
 
-                        if agg_dir:
-                            msg_agg = (
-                                f"🟠 <b>[V26 AGRESSIVO] SINAL ENCONTRADO</b> 🟠\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📊 <b>Par:</b> ETH/USDT (1M)\n"
-                                f"⚡ <b>Direção:</b> {agg_dir}\n"
-                                f"⏰ <b>Entrada:</b> {hora_entrada}\n"
-                                f"📈 <b>RSI(7):</b> {rsi7} | <b>BBZ:</b> {bbz}\n"
-                                f"📊 <b>Vol:</b> {vol}x | <b>Velas:</b> {max(consec_red, consec_green)}\n"
-                                f"🔥 <i>Perfil de Alta Frequência</i>"
-                            )
-                            send_telegram_msg(msg_agg)
-
-            time.sleep(3)
         except Exception as e:
-            time.sleep(5)
+            print(f"Erro na execução do loop: {e}")
+
+        time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     main()
