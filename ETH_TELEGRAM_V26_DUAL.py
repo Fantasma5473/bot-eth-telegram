@@ -7,13 +7,19 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==========================================
-# 1. SERVIDOR HTTP DE SAÚDE (RENDER)
+# 1. SERVIDOR HTTP DE SAÚDE (RENDER FIX)
 # ==========================================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Bot V26 Exaustao M1 (Dual Telegram) Rodando!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
 
 def run_health_check_server():
     port = int(os.environ.get("PORT", 10000))
@@ -144,7 +150,7 @@ def run_trading_engine():
 
                 # --- GERAR SINAIS MODO AGRESSIVO (M1) ---
                 if last_signal_time_agressivo != current_time:
-                    if last['RSI7'] <= 25 or last['BBZ'] <= -2.0:
+                    if last['RSI7'] <= 30 or last['BBZ'] <= -1.8:
                         active_trade_agressivo = {"direction": "CALL", "entry_price": current_price}
                         msg = (
                             f"⚡ *[AGRESSIVO - M1] SINAL: CALL (COMPRA)*\n"
@@ -156,7 +162,7 @@ def run_trading_engine():
                         send_telegram_message(msg)
                         last_signal_time_agressivo = current_time
 
-                    elif last['RSI7'] >= 75 or last['BBZ'] >= 2.0:
+                    elif last['RSI7'] >= 70 or last['BBZ'] >= 1.8:
                         active_trade_agressivo = {"direction": "PUT", "entry_price": current_price}
                         msg = (
                             f"⚡ *[AGRESSIVO - M1] SINAL: PUT (VENDA)*\n"
@@ -170,7 +176,7 @@ def run_trading_engine():
 
                 # --- GERAR SINAIS MODO CONSERVADOR (M1) ---
                 if last_signal_time_conservador != current_time:
-                    if last['RSI7'] <= 18 and last['BBZ'] <= -2.3:
+                    if last['RSI7'] <= 22 and last['BBZ'] <= -2.1:
                         active_trade_conservador = {"direction": "CALL", "entry_price": current_price}
                         msg = (
                             f"🛡️ *[CONSERVADOR - M1] SINAL: CALL (COMPRA)*\n"
@@ -182,7 +188,7 @@ def run_trading_engine():
                         send_telegram_message(msg)
                         last_signal_time_conservador = current_time
 
-                    elif last['RSI7'] >= 82 and last['BBZ'] >= 2.3:
+                    elif last['RSI7'] >= 78 and last['BBZ'] >= 2.1:
                         active_trade_conservador = {"direction": "PUT", "entry_price": current_price}
                         msg = (
                             f"🛡️ *[CONSERVADOR - M1] SINAL: PUT (VENDA)*\n"
@@ -202,5 +208,5 @@ def run_trading_engine():
 # 4. EXECUÇÃO
 # ==========================================
 if __name__ == "__main__":
-    send_telegram_message("🚀 *Bot V26 Exaustão M1 DUAL Ativado com Sucesso!*\n⚡ Agressivo: RSI(7) ≤ 25 / ≥ 75 (~63 sinais/dia)\n🛡️ Conservador: RSI(7) ≤ 18 / ≥ 82 (~26 sinais/dia)\n⏳ Expiração: 1 Minuto para Opções Binárias.")
+    send_telegram_message("🚀 *Bot V26 Exaustão M1 DUAL Atualizado com Sucesso!*\n⚡ Agressivo: RSI(7) ≤ 30 / ≥ 70 (~63 sinais/dia)\n🛡️ Conservador: RSI(7) ≤ 22 / ≥ 78 (~26 sinais/dia)\n⏳ Expiração: 1 Minuto para Opções Binárias.")
     run_trading_engine()
