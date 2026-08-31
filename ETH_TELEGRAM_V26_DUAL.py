@@ -3,9 +3,24 @@ import time
 import requests
 import pandas as pd
 import numpy as np
+from flask import Flask
+from threading import Thread
 
 # ==========================================
-# CONFIGURAÇÃO DE VARIÁVEIS DE AMBIENTE
+# SERVIDOR WEB PARA MANTER O RENDER FREE ATIVO
+# ==========================================
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def health_check():
+    return "Bot V26 Exaustao Pro (61.6%) Rodando 24/7!"
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
+
+# ==========================================
+# CONFIGURAÇÃO DE VARIÁVEIS DO TELEGRAM
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8649783045:AAE2mxbkGREP3a6lrXWxh6nHaHEwfcCc5mg")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8704308638")
@@ -19,7 +34,7 @@ def send_telegram_message(message):
         print(f"Erro no envio do Telegram: {e}")
 
 # ==========================================
-# DADOS DA BINANCE E INDICADORES PRO (61.6%)
+# INDICADORES PRO (61.6% WINRATE)
 # ==========================================
 def get_binance_klines(symbol="ETHUSDT", interval="1m", limit=60):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
@@ -35,7 +50,6 @@ def get_binance_klines(symbol="ETHUSDT", interval="1m", limit=60):
             df[col] = df[col].astype(float)
         return df
     except Exception as e:
-        print(f"Erro ao buscar dados da Binance: {e}")
         return None
 
 def process_indicators(df):
@@ -80,10 +94,10 @@ def process_indicators(df):
     return df
 
 # ==========================================
-# MOTOR DE EXECUÇÃO EM NUVEM (HEADLESS)
+# MOTOR PRINCIPAL
 # ==========================================
 def run_cloud_bot():
-    send_telegram_message("☁️ *Bot V26 Exaustão Pro (61.6%) Rodando 24/7 na Nuvem!*\n Pode desligar o computador. Os sinais serão enviados aqui.")
+    send_telegram_message("☁️ *Bot V26 Exaustão Pro (61.6%) Ativo no Render Free!*")
     
     last_signal_time = None
     active_trade = None
@@ -95,7 +109,6 @@ def run_cloud_bot():
                 df = process_indicators(df)
                 closed = df.iloc[-2]
                 
-                t_str = time.strftime('%H:%M:%S', time.localtime(closed['timestamp'] / 1000))
                 price = closed['close']
                 rsi = closed['RSI5']
                 bbz = closed['BBZ']
@@ -104,7 +117,7 @@ def run_cloud_bot():
                 body = closed['candle_body']
                 atr = closed['ATR14']
 
-                # 1. Validação do Sinal Anterior (WIN / LOSS)
+                # Validação do Resultado
                 if active_trade is not None and active_trade['target_time'] == closed['timestamp']:
                     entry = active_trade['entry']
                     direction = active_trade['direction']
@@ -120,7 +133,7 @@ def run_cloud_bot():
                     )
                     active_trade = None
 
-                # 2. Filtros Anti-Ruído (61.6% Winrate)
+                # Filtro Anti-Ruído
                 vol_ok = vol >= 1.5
                 body_ok = body >= (1.2 * atr)
 
@@ -146,9 +159,13 @@ def run_cloud_bot():
                         last_signal_time = closed['timestamp']
 
         except Exception as e:
-            print(f"Erro na execução da nuvem: {e}")
+            print(f"Erro na execução: {e}")
         
         time.sleep(5)
 
 if __name__ == "__main__":
+    # Inicia o servidor HTTP em background para o Render Free não dar erro de porta
+    Thread(target=keep_alive, daemon=True).start()
+    
+    # Inicia o monitoramento do bot
     run_cloud_bot()
