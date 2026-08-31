@@ -13,30 +13,22 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot ETH Telegram rodando perfeitamente!")
+        self.wfile.write(b"Bots Conservador e Agressivo rodando!")
 
 def run_health_check_server():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    print(f"--> Servidor HTTP de Health Check rodando na porta {port}")
     server.serve_forever()
 
-# Inicia o servidor HTTP em uma thread secundária para não travar o bot
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
 # ==========================================
-# 2. CONFIGURAÇÕES DO TELEGRAM E BINANCE
+# 2. CONFIGURAÇÕES COMPARTILHADAS
 # ==========================================
-# Insira seus dados abaixo se não estiver usando variáveis de ambiente
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "SEU_TOKEN_AQUI")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "SEU_CHAT_ID_AQUI")
 
-SYMBOL = "ETHUSDT"
-INTERVAL = "15m"
-CHECK_INTERVAL = 60  # Verifica a cada 60 segundos
-
 def send_telegram_message(message):
-    """Envia mensagem para o Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -44,14 +36,11 @@ def send_telegram_message(message):
         "parse_mode": "Markdown"
     }
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        return response.json()
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Erro ao enviar mensagem no Telegram: {e}")
-        return None
+        print(f"Erro no Telegram: {e}")
 
-def get_binance_klines(symbol=SYMBOL, interval=INTERVAL, limit=100):
-    """Obtém dados históricos de velas (candles) da Binance"""
+def get_binance_klines(symbol="ETHUSDT", interval="15m", limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         response = requests.get(url, timeout=10)
@@ -62,19 +51,15 @@ def get_binance_klines(symbol=SYMBOL, interval=INTERVAL, limit=100):
             'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
         ])
         df['close'] = df['close'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
         return df
     except Exception as e:
-        print(f"Erro ao obter dados da Binance: {e}")
+        print(f"Erro Binance: {e}")
         return None
 
 def calculate_indicators(df):
-    """Calcula as médias móveis e RSI (Indicadores)"""
     df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['EMA_21'] = df['close'].ewm(span=21, adjust=False).mean()
     
-    # Cálculo do RSI 14
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -83,59 +68,69 @@ def calculate_indicators(df):
     return df
 
 # ==========================================
-# 3. LOOP PRINCIPAL DO BOT
+# 3. MODO CONSERVADOR (Gráfico de 1 Hora)
 # ==========================================
-def main():
-    print("--> Bot ETH Telegram iniciado com sucesso!")
-    send_telegram_message("🚀 *Bot ETH iniciado e rodando 24/7 na nuvem!*")
-    
+def run_conservador():
+    print("--> Perfil CONSERVADOR ativo (TF: 1h)")
     last_signal = None
-
     while True:
         try:
-            df = get_binance_klines()
+            df = get_binance_klines(interval="1h")
             if df is not None and not df.empty:
                 df = calculate_indicators(df)
+                last = df.iloc[-1]
+                prev = df.iloc[-2]
                 
-                last_row = df.iloc[-1]
-                prev_row = df.iloc[-2]
-                
-                price = last_row['close']
-                ema9 = last_row['EMA_9']
-                ema21 = last_row['EMA_21']
-                rsi = last_row['RSI']
-                
-                prev_ema9 = prev_row['EMA_9']
-                prev_ema21 = prev_row['EMA_21']
-                
-                # Condição de COMPRA (Cruzamento de Alta)
-                if prev_ema9 <= prev_ema21 and ema9 > ema21:
+                if prev['EMA_9'] <= prev['EMA_21'] and last['EMA_9'] > last['EMA_21']:
                     if last_signal != "BUY":
-                        msg = (
-                            f"🟢 *SINAL DE COMPRA (LONG) - ETH/USDT*\n\n"
-                            f"💰 *Preço Atual:* ${price:.2f}\n"
-                            f"📊 *RSI (14):* {rsi:.1f}\n"
-                            f"📈 *EMA 9 cruzou acima da EMA 21*"
-                        )
+                        msg = f"🛡️ *[CONSERVADOR - 1H] COMPRA ETH/USDT*\n💰 Preço: ${last['close']:.2f}\n📊 RSI: {last['RSI']:.1f}"
                         send_telegram_message(msg)
                         last_signal = "BUY"
-                
-                # Condição de VENDA (Cruzamento de Baixa)
-                elif prev_ema9 >= prev_ema21 and ema9 < ema21:
+                elif prev['EMA_9'] >= prev['EMA_21'] and last['EMA_9'] < last['EMA_21']:
                     if last_signal != "SELL":
-                        msg = (
-                            f"🔴 *SINAL DE VENDA (SHORT) - ETH/USDT*\n\n"
-                            f"💰 *Preço Atual:* ${price:.2f}\n"
-                            f"📊 *RSI (14):* {rsi:.1f}\n"
-                            f"📉 *EMA 9 cruzou abaixo da EMA 21*"
-                        )
+                        msg = f"🛡️ *[CONSERVADOR - 1H] VENDA ETH/USDT*\n💰 Preço: ${last['close']:.2f}\n📊 RSI: {last['RSI']:.1f}"
                         send_telegram_message(msg)
                         last_signal = "SELL"
-
         except Exception as e:
-            print(f"Erro na execução do loop: {e}")
+            print(f"Erro Conservador: {e}")
+        time.sleep(60)
 
-        time.sleep(CHECK_INTERVAL)
+# ==========================================
+# 4. MODO AGRESSIVO (Gráfico de 15 Minutos)
+# ==========================================
+def run_agressivo():
+    print("--> Perfil AGRESSIVO ativo (TF: 15m)")
+    last_signal = None
+    while True:
+        try:
+            df = get_binance_klines(interval="15m")
+            if df is not None and not df.empty:
+                df = calculate_indicators(df)
+                last = df.iloc[-1]
+                prev = df.iloc[-2]
+                
+                if prev['EMA_9'] <= prev['EMA_21'] and last['EMA_9'] > last['EMA_21']:
+                    if last_signal != "BUY":
+                        msg = f"⚡ *[AGRESSIVO - 15M] COMPRA ETH/USDT*\n💰 Preço: ${last['close']:.2f}\n📊 RSI: {last['RSI']:.1f}"
+                        send_telegram_message(msg)
+                        last_signal = "BUY"
+                elif prev['EMA_9'] >= prev['EMA_21'] and last['EMA_9'] < last['EMA_21']:
+                    if last_signal != "SELL":
+                        msg = f"⚡ *[AGRESSIVO - 15M] VENDA ETH/USDT*\n💰 Preço: ${last['close']:.2f}\n📊 RSI: {last['RSI']:.1f}"
+                        send_telegram_message(msg)
+                        last_signal = "SELL"
+        except Exception as e:
+            print(f"Erro Agressivo: {e}")
+        time.sleep(60)
 
+# ==========================================
+# 5. EXECUÇÃO PARALELA DUAL
+# ==========================================
 if __name__ == "__main__":
-    main()
+    send_telegram_message("🚀 *Sistema DUAL Conectado!*\n🛡️ Modo Conservador (1h) ON\n⚡ Modo Agressivo (15m) ON")
+    
+    t_conservador = threading.Thread(target=run_conservador)
+    t_agressivo = threading.Thread(target=run_agressivo)
+    
+    t_conservador.start()
+    t_agressivo.start()
